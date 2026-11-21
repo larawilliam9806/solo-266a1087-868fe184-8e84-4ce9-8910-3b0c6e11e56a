@@ -2,7 +2,8 @@
 
 FastAPI + SQLite 实现的转录稿勘误版本管理服务。支持：导入正文与带编号的人名/
 地名标注、按当前版应用勘误（左闭右开区间替换，含插入与删除）、按勘误号撤回
-（带冲突检测）、标注待复核跟踪、实体检索，以及同一版本的一致性查询。
+（带冲突检测）、标注待复核跟踪、实体检索、同一版本的一致性查询，以及按本地
+词表统计专题词组在原稿/现稿中的出现次数与涉及稿数。
 
 ## 启动
 
@@ -12,6 +13,13 @@ docker compose up --build
 ```
 
 SQLite 数据文件落在命名卷 `app_data`（容器内 `/data/app.db`）。
+
+本地词表放在仓库根目录的 `wordlist.txt`（compose 会把它只读挂载到容器的
+`/app/wordlist.txt`）。首次启动时自动从词表启用专题词频统计并纳入**已有
+稿件**；之后重启沿用数据库中保存的这份词表，本地文件再变也不影响已有统计。
+词表格式：每行一个词组，`#` 开头为注释；也接受逗号/分号/顿号分隔，或 JSON
+数组。可用 `WORDLIST_PATH` 指定词表路径，或用 `WORDLIST_TERMS=北京,胡同`
+直接给出行内词表。
 
 本地开发（无需 Docker）：
 
@@ -39,6 +47,11 @@ python3 -m unittest discover -s tests -p 'test_engine.py'   # 仅引擎（零依
   待复核；影响它的勘误全部撤回后自动恢复有效。落在标注边界上的插入不算。
 - **版本查询**：正文、有效标注的当前字符区间、待复核标注在同一次读事务中
   返回，并附单调递增的 `revision`，保证三者来自同一版。
+- **专题词频**：按词表中的词组统计每份稿件的**原稿**与**现稿**出现次数。
+  逐字子串匹配，重叠出现分别计数（`aaa` 在 `aaaa` 中算 2 次）。查询返回
+  两套统计各自的总出现次数与涉及稿数；新导入稿件同时计入两套统计；勘误/
+  撤回只改现稿统计，且只重算改动文字及跨过改动边界的上下文。统计与正文在
+  同一事务内更新，查询只读已保存的计数。
 
 ## API 一览
 
@@ -52,6 +65,12 @@ python3 -m unittest discover -s tests -p 'test_engine.py'   # 仅引擎（零依
 | GET | `/documents/{doc}/corrections` | 勘误流水（含状态与触及关系） |
 | GET | `/documents/{doc}/entities?kind=&q=` | 实体检索（按人名/地名、名称子串） |
 | GET | `/documents/{doc}/entities/{number}` | 单个实体 |
+| POST | `/wordstats/initialize` | 从本地词表启用/更新统计（body 可传 `terms`、`path`、`replace`） |
+| GET | `/wordstats?term=` | 查询词表词频（`term` 可重复，或 `terms=` 逗号分隔） |
+| GET | `/wordstats/terms/{term}` | 查询单个词组 |
+| GET | `/documents/{doc}/wordstats` | 单篇稿件的词组统计 |
+
+`/word-frequency` 系列是 `/wordstats` 的别名。
 
 ## 示例
 
@@ -92,6 +111,21 @@ curl -X POST localhost:8000/documents/1/corrections/1/retract
 # => 409 {"detail": "存在仍生效的冲突后续勘误，保留现版", "conflicts": [2]}
 ```
 
+专题词频示例（首次启用会统计已有稿件）：
+
+```bash
+# 用本地 wordlist.txt（或启动时已自动启用）
+curl -X POST localhost:8000/wordstats/initialize
+# => {"enabled": true, "initialized": true, "term_count": 3, "document_count": 1}
+
+# 查询词表词组：原稿/现稿各自的总出现次数与涉及稿数
+curl 'localhost:8000/wordstats?term=北京'
+# => [{"term": "北京", "original_count": 2, "current_count": 1,
+#      "original_document_count": 1, "current_document_count": 1,
+#      "original": {"count": 2, "document_count": 1, ...},
+#      "current":  {"count": 1, "document_count": 1, ...}}]
+```
+
 ## 实现要点
 
 当前版正文用**片段表**表示：每个片段引用原文的一段、某笔勘误写入文本的一
@@ -101,13 +135,20 @@ curl -X POST localhost:8000/documents/1/corrections/1/retract
 撤回是精确的整体还原，不影响其他勘误的成果。标注区间按原文坐标存储，查询
 时经片段表映射到当前版坐标。
 
+专题词频同样落在片段表上：改动时只渲染「改动区间 + 各词组长度 − 1 字符的
+边界上下文」，比较改动前后该窗口内的出现次数并增量写入已保存统计，不重扫
+全文；撤回时以还原后的片段表重新定位本笔落点（前文勘误移动过位置也按实际
+位置算）。原稿统计不因勘误变化。
+
 ```
 app/
   engine.py   # 片段表核心算法（纯 Python，零依赖）
   db.py       # SQLite 模式与存取
-  service.py  # 业务操作（导入/勘误/撤回/查询/检索）
+  service.py  # 业务操作（导入/勘误/撤回/查询/检索/词频）
   main.py     # FastAPI 路由与事务
 tests/
-  test_engine.py  # 引擎单元测试（标准库即可运行）
-  test_api.py     # API 集成测试
+  test_engine.py     # 引擎单元测试（标准库即可运行）
+  test_api.py        # API 集成测试
+  test_wordstats.py  # 专题词频测试
+wordlist.txt         # 本地专题词表（首次启动启用统计）
 ```

@@ -142,6 +142,75 @@ def render(pieces: list[dict], original: str, corr_texts: dict[int, str]) -> str
     return "".join(out)
 
 
+def render_slice(pieces: list[dict], original: str, corr_texts: dict[int, str],
+                 start: int, end: int) -> str:
+    """只拼出当前版 [start, end) 区间的文字（避免为局部统计渲染全文）。"""
+    if start >= end:
+        return ""
+    out = []
+    pos = 0
+    for p in pieces:
+        plen = p["b"] - p["a"]
+        if plen == 0:
+            continue
+        ps, pe = pos, pos + plen
+        if pe <= start:
+            pos = pe
+            continue
+        if ps >= end:
+            break
+        lo, hi = max(ps, start), min(pe, end)
+        if lo < hi:
+            off = lo - ps
+            if p["kind"] == "orig":
+                out.append(original[p["a"] + off:p["a"] + off + (hi - lo)])
+            elif p["kind"] == "ins":
+                out.append(corr_texts[p["src"]][p["a"] + off:p["a"] + off + (hi - lo)])
+        pos = pe
+    return "".join(out)
+
+
+def count_occurrences(text: str, term: str) -> int:
+    """逐字统计 term 在 text 中的出现次数；重叠出现分别计数。
+
+    例如 "aa" 在 "aaa" 中出现 2 次。
+    """
+    if not term:
+        return 0
+    count = 0
+    i = text.find(term)
+    while i != -1:
+        count += 1
+        i = text.find(term, i + 1)
+    return count
+
+
+def locate_inserted(pieces: list[dict], src: int) -> tuple[int, int] | None:
+    """当前版中某笔插入/替换所写文字的 [start, end)；不存在则返回 None。"""
+    pos = 0
+    start = end = None
+    for p in pieces:
+        plen = p["b"] - p["a"]
+        if p["kind"] == "ins" and p["src"] == src and plen:
+            if start is None:
+                start = pos
+            end = pos + plen
+        pos += plen
+    if start is None:
+        return None
+    return start, end
+
+
+def locate_seam(pieces: list[dict], src: int) -> int | None:
+    """当前版中某笔纯删除留下的接缝位置；不存在则返回 None。"""
+    pos = 0
+    for p in pieces:
+        if p["kind"] == "seam" and p["src"] == src:
+            return pos
+        pos += p["b"] - p["a"]
+    return None
+
+
 def current_range(pieces: list[dict], a: int, b: int) -> tuple[int, int]:
     """把原文区间 [a, b) 映射为当前版区间（尽力而为）。
 

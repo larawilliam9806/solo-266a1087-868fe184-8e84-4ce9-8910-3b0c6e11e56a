@@ -175,5 +175,45 @@ class TouchSpanTest(unittest.TestCase):
         self.assertFalse(T(8, 8, True, 4, 8))
 
 
+class WordCountTest(unittest.TestCase):
+    def test_count_occurrences_non_overlapping(self):
+        self.assertEqual(engine.count_occurrences("ababab", "ab"), 3)
+        self.assertEqual(engine.count_occurrences("北京市", "北京"), 1)
+
+    def test_count_occurrences_overlapping_each_counts(self):
+        self.assertEqual(engine.count_occurrences("aaaa", "aa"), 3)
+        self.assertEqual(engine.count_occurrences("aaaa", "aaa"), 2)
+
+    def test_count_occurrences_empty(self):
+        self.assertEqual(engine.count_occurrences("abc", ""), 0)
+        self.assertEqual(engine.count_occurrences("", "a"), 0)
+
+    def test_render_slice(self):
+        pieces = [engine.piece("orig", None, 0, 6),
+                  engine.piece("ins", 1, 0, 2),
+                  engine.piece("orig", None, 6, 9)]
+        # 原文 ABCDEF + “XY” + GHI
+        self.assertEqual(
+            engine.render_slice(pieces, "ABCDEFGHI", {1: "XY"}, 0, 8), "ABCDEFXY")
+        self.assertEqual(
+            engine.render_slice(pieces, "ABCDEFGHI", {1: "XY"}, 4, 9), "EFXYG")
+        self.assertEqual(
+            engine.render_slice(pieces, "ABCDEFGHI", {1: "XY"}, 6, 8), "XY")
+        self.assertEqual(
+            engine.render_slice(pieces, "ABCDEFGHI", {1: "XY"}, 5, 5), "")
+
+    def test_locate_inserted_and_seam(self):
+        pieces = [engine.piece("orig", None, 0, 3),
+                  engine.piece("seam", 1, 0, 0),
+                  engine.piece("orig", None, 3, 5)]
+        self.assertEqual(engine.locate_seam(pieces, 1), 3)
+        self.assertIsNone(engine.locate_seam(pieces, 2))
+        pieces2 = [engine.piece("orig", None, 0, 2),
+                   engine.piece("ins", 7, 0, 3),
+                   engine.piece("orig", None, 2, 4)]
+        self.assertEqual(engine.locate_inserted(pieces2, 7), (2, 5))
+        self.assertIsNone(engine.locate_inserted(pieces2, 8))
+
+
 if __name__ == "__main__":
     unittest.main()

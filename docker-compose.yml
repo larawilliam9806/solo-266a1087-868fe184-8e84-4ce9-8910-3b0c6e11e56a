@@ -5,8 +5,12 @@ services:
       - "8000:8000"
     environment:
       DB_PATH: /data/app.db
+      # 本地词表：仓库根目录的 wordlist.txt 挂载进容器。
+      # 首次启动自动启用专题词频并纳入已有稿件；之后重启沿用库中词表。
+      WORDLIST_PATH: /app/wordlist.txt
     volumes:
       - app_data:/data
+      - ./wordlist.txt:/app/wordlist.txt:ro
     restart: unless-stopped
 
 volumes:

@@ -63,6 +63,22 @@ CREATE TABLE IF NOT EXISTS entity_effects (
     correction_number INTEGER NOT NULL,  -- 影响该标注的仍生效勘误
     PRIMARY KEY (document_id, entity_id, correction_number)
 );
+CREATE TABLE IF NOT EXISTS word_terms (
+    term TEXT PRIMARY KEY,               -- 词表中的词组（逐字匹配）
+    seq  INTEGER NOT NULL                -- 词表内顺序，查询按此输出
+);
+CREATE TABLE IF NOT EXISTS word_stats (
+    document_id    INTEGER NOT NULL REFERENCES documents(id),
+    term           TEXT NOT NULL,
+    original_count INTEGER NOT NULL DEFAULT 0,  -- 原稿出现次数
+    current_count  INTEGER NOT NULL DEFAULT 0,  -- 现稿出现次数
+    PRIMARY KEY (document_id, term)
+);
+CREATE INDEX IF NOT EXISTS idx_word_stats_term ON word_stats(term);
+CREATE TABLE IF NOT EXISTS wordstats_meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 """
 
 
@@ -140,6 +156,60 @@ def active_conflicts_against(conn: sqlite3.Connection, doc_id: int, number: int)
         (doc_id, number),
     ).fetchall()
     return [r["n"] for r in rows]
+
+
+# ---- 专题词频 ----
+
+def word_terms(conn: sqlite3.Connection) -> list[str]:
+    rows = conn.execute("SELECT term FROM word_terms ORDER BY seq, term").fetchall()
+    return [r["term"] for r in rows]
+
+
+def replace_word_terms(conn: sqlite3.Connection, terms: list[str]) -> None:
+    conn.execute("DELETE FROM word_terms")
+    conn.executemany(
+        "INSERT OR IGNORE INTO word_terms (term, seq) VALUES (?, ?)",
+        [(t, i) for i, t in enumerate(terms)],
+    )
+
+
+def word_stat_rows(conn: sqlite3.Connection, doc_id: int) -> dict[str, tuple[int, int]]:
+    rows = conn.execute(
+        "SELECT term, original_count, current_count FROM word_stats"
+        " WHERE document_id = ?",
+        (doc_id,),
+    ).fetchall()
+    return {r["term"]: (r["original_count"], r["current_count"]) for r in rows}
+
+
+def save_word_stats(conn: sqlite3.Connection, doc_id: int,
+                    stats: dict[str, tuple[int, int]]) -> None:
+    """整体覆盖某文档的统计；没有任何出现的词不留行。"""
+    conn.execute("DELETE FROM word_stats WHERE document_id = ?", (doc_id,))
+    conn.executemany(
+        "INSERT INTO word_stats (document_id, term, original_count, current_count)"
+        " VALUES (?, ?, ?, ?)",
+        [(doc_id, t, oc, cc) for t, (oc, cc) in stats.items()
+         if oc or cc],
+    )
+
+
+def delete_word_stats(conn: sqlite3.Connection, doc_id: int) -> None:
+    conn.execute("DELETE FROM word_stats WHERE document_id = ?", (doc_id,))
+
+
+def meta_get(conn: sqlite3.Connection, key: str) -> str | None:
+    row = conn.execute(
+        "SELECT value FROM wordstats_meta WHERE key = ?", (key,)).fetchone()
+    return row["value"] if row else None
+
+
+def meta_set(conn: sqlite3.Connection, key: str, value: str) -> None:
+    conn.execute(
+        "INSERT INTO wordstats_meta (key, value) VALUES (?, ?)"
+        " ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (key, value),
+    )
 
 
 # ---- JSON 序列化 ----
